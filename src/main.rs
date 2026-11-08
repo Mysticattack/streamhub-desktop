@@ -593,8 +593,13 @@ impl App {
                     if d.running {
                         ui.colored_label(egui::Color32::from_rgb(90, 220, 90), format!("läuft {}s", d.up));
                     } else if d.enabled {
-                        ui.colored_label(egui::Color32::from_rgb(220, 140, 140),
-                                          if d.err.is_empty() { "aus".to_string() } else { format!("aus: {}", d.err.chars().take(50).collect::<String>()) });
+                        if d.err.is_empty() {
+                            ui.colored_label(egui::Color32::from_rgb(205, 200, 120),
+                                             "wartet auf Stream");
+                        } else {
+                            ui.colored_label(egui::Color32::from_rgb(220, 140, 140),
+                                             format!("aus: {}", d.err.chars().take(60).collect::<String>()));
+                        }
                     } else {
                         ui.label("ausgeschaltet");
                     }
