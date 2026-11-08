@@ -51,6 +51,10 @@ struct Overlay {
 struct Youtube {
     api_key: String,
     video_id: String,
+    #[serde(default)]
+    client_id: String,
+    #[serde(default)]
+    client_secret: String,
 }
 
 #[derive(Deserialize, Serialize, Default, Clone, Debug)]
@@ -286,6 +290,9 @@ struct App {
     new_url: String,
     draft: Option<Config>,
     scenes: Vec<String>,
+    yt_id: String,
+    yt_secret: String,
+    yt_state: String,
     current_scene: String,
     msg: String,
     msg_time: Instant,
@@ -306,6 +313,9 @@ impl App {
             new_url: String::new(),
             draft: None,
             scenes: Vec::new(),
+            yt_id: String::new(),
+            yt_secret: String::new(),
+            yt_state: String::new(),
             current_scene: String::new(),
             msg: String::new(),
             msg_time: Instant::now(),
@@ -325,6 +335,30 @@ impl App {
         match api_post(&base, &token, path, &body) {
             Ok(_) => self.note("gespeichert"),
             Err(e) => self.note(format!("Fehler: {}", e)),
+        }
+    }
+
+    fn yt_connect(&mut self) {
+        let (base, token) = {
+            let l = self.local.lock().unwrap();
+            (l.server.clone(), l.token.clone())
+        };
+        let url = format!("{}/api/yt/start?token={}", base.trim_end_matches('/'), urlencode(&token));
+        match ureq::get(&url).timeout(Duration::from_secs(10)).call() {
+            Ok(resp) => {
+                let txt = resp.into_string().unwrap_or_default();
+                let v: serde_json::Value = serde_json::from_str(&txt).unwrap_or_default();
+                if v.get("ok").and_then(|o| o.as_bool()) == Some(true) {
+                    if let Some(u) = v.get("url").and_then(|u| u.as_str()) {
+                        let _ = std::process::Command::new("xdg-open").arg(u).spawn();
+                        self.yt_state = "Browser geoeffnet - bitte zustimmen".into();
+                    }
+                } else {
+                    self.yt_state = v.get("error").and_then(|e| e.as_str()).unwrap_or("Fehler").to_string();
+                    self.note(format!("YouTube: {}", self.yt_state));
+                }
+            }
+            Err(e) => self.note(format!("YouTube: {}", e)),
         }
     }
 
@@ -602,6 +636,37 @@ impl App {
                 self.new_url.clear();
             }
         });
+        ui.add_space(12.0);
+        ui.separator();
+        ui.label("YouTube verbinden");
+        if let Some(c) = cfg {
+            if self.yt_id.is_empty() {
+                self.yt_id = c.youtube.client_id.clone();
+                self.yt_secret = c.youtube.client_secret.clone();
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.label("Client-ID");
+            ui.add(egui::TextEdit::singleline(&mut self.yt_id).desired_width(340.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Client-Secret");
+            ui.add(egui::TextEdit::singleline(&mut self.yt_secret).password(true).desired_width(340.0));
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Speichern").clicked() {
+                let body = serde_json::json!({"youtube": {"client_id": self.yt_id, "client_secret": self.yt_secret}});
+                self.post("/api/config", body);
+            }
+            if ui.button("Mit YouTube verbinden").clicked() {
+                self.yt_connect();
+            }
+            if !self.yt_state.is_empty() {
+                ui.label(&self.yt_state);
+            }
+        });
+        ui.small("Einmalig: Google-Client anlegen, Daten hier eintragen, dann verbinden.");
+
         if let Some(c) = cfg {
             if let Some(ing) = Some(&c.ingest) {
                 ui.add_space(12.0);
