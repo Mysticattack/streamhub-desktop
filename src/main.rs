@@ -125,6 +125,32 @@ struct InfoResp {
 }
 
 #[derive(Deserialize, Serialize, Default, Clone, Debug)]
+struct OvInner {
+    #[serde(default)]
+    splash: String,
+    #[serde(default)]
+    goal: u32,
+    #[serde(default)]
+    countdown_minutes: u32,
+    #[serde(default)]
+    chat_seconds: u32,
+    #[serde(default)]
+    chat_max: u32,
+    #[serde(default)]
+    texts: std::collections::HashMap<String, String>,
+}
+
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
+struct OvResp {
+    #[serde(default)]
+    ok: bool,
+    #[serde(default)]
+    config: OvInner,
+    #[serde(default)]
+    error: String,
+}
+
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
 struct ActItem {
     t: String,
     kind: String,
@@ -356,6 +382,7 @@ fn spawn_poller(ctx: egui::Context, local: Arc<Mutex<Local>>, shared: SharedRef)
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
     Status,
+    Overlay,
     Infos,
     Chat,
     Szenen,
@@ -392,6 +419,12 @@ struct App {
     sc_min: i64,
     sc_next: String,
     sc_loaded: bool,
+    ov: Option<OvInner>,
+    ov_splash: String,
+    ov_goal: u32,
+    ov_cd: u32,
+    ov_chatsec: u32,
+    ov_chatmax: u32,
     inf_loaded: bool,
     big: bool,
     chat_platform: bool,   // false = Twitch, true = YouTube
@@ -431,6 +464,12 @@ impl App {
             sc_min: 0,
             sc_next: String::new(),
             sc_loaded: false,
+            ov: None,
+            ov_splash: String::new(),
+            ov_goal: 100,
+            ov_cd: 0,
+            ov_chatsec: 60,
+            ov_chatmax: 9,
             inf_loaded: false,
             big: false,
             chat_platform: false,
@@ -574,6 +613,7 @@ impl eframe::App for App {
             ui.add_space(8.0);
             for (t, name) in [
                 (Tab::Status, "Status"),
+                (Tab::Overlay, "Overlay"),
                 (Tab::Infos, "Infos"),
                 (Tab::Chat, "Chat"),
                 (Tab::Szenen, "Szenen"),
@@ -593,6 +633,7 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Status => self.ui_status(ui, &status, &activity),
+            Tab::Overlay => self.ui_overlay(ui),
             Tab::Infos => self.ui_infos(ui, &info),
             Tab::Chat => self.ui_chat(ui),
             Tab::Szenen => self.ui_szenen(ui),
@@ -1090,6 +1131,150 @@ impl App {
                 });
                 self.post("/api/streaminfo", body);
             }
+        });
+    }
+
+
+    fn ov_fetch(&mut self) {
+        let (base, token) = {
+            let l = self.local.lock().unwrap();
+            (l.server.clone(), l.token.clone())
+        };
+        if let Ok(r) = api_get::<OvResp>(&base, &token, "/api/overlay") {
+            if r.ok {
+                self.ov_splash = r.config.splash.clone();
+                self.ov_goal = if r.config.goal == 0 { 100 } else { r.config.goal };
+                self.ov_cd = r.config.countdown_minutes;
+                self.ov_chatsec = if r.config.chat_seconds == 0 { 60 } else { r.config.chat_seconds };
+                self.ov_chatmax = if r.config.chat_max == 0 { 9 } else { r.config.chat_max };
+                self.ov = Some(r.config);
+            } else {
+                self.note(format!("Overlay: {}", r.error));
+            }
+        }
+    }
+
+    fn ui_overlay(&mut self, ui: &mut egui::Ui) {
+        if self.ov.is_none() {
+            self.ov_fetch();
+        }
+        ui.horizontal(|ui| {
+            ui.heading("Overlay");
+            if ui.button("Neu laden").clicked() {
+                self.ov = None;
+            }
+        });
+        ui.add_space(6.0);
+        let Some(cfg) = self.ov.clone() else {
+            ui.label("Konnte die Overlay-Einstellungen nicht laden.");
+            return;
+        };
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            let mut texts = cfg.texts.clone();
+
+            ui.label("Allgemein");
+            egui::Grid::new("ov_allg").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                ui.label("Stream-Titel");
+                let mut t = texts.get("stream_title").cloned().unwrap_or_default();
+                if ui.add(egui::TextEdit::singleline(&mut t).desired_width(420.0)).changed() {
+                    texts.insert("stream_title".into(), t);
+                }
+                ui.end_row();
+                ui.label("Splash-Text");
+                ui.add(egui::TextEdit::singleline(&mut self.ov_splash).desired_width(420.0));
+                ui.end_row();
+                ui.label("Follower-Ziel");
+                ui.add(egui::DragValue::new(&mut self.ov_goal).range(1..=100000));
+                ui.end_row();
+                ui.label("Countdown (Minuten)");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.ov_cd).range(0..=600));
+                    if ui.button("Start").clicked() {
+                        self.post("/api/overlay", serde_json::json!({"countdown_minutes": self.ov_cd}));
+                        self.note("Countdown gestartet");
+                    }
+                    if ui.button("Aus").clicked() {
+                        self.post("/api/overlay", serde_json::json!({"countdown_minutes": 0}));
+                        self.note("Countdown aus");
+                    }
+                });
+                ui.end_row();
+                ui.label("Chat-Nachricht weg nach");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.ov_chatsec).range(5..=600));
+                    ui.label("Sekunden, max.");
+                    ui.add(egui::DragValue::new(&mut self.ov_chatmax).range(1..=20));
+                    ui.label("Zeilen");
+                });
+                ui.end_row();
+            });
+
+            ui.add_space(10.0);
+            ui.label("Texte");
+            egui::Grid::new("ov_texts").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                for (key, label) in [
+                    ("live_label", "LIVE-Anzeige"),
+                    ("start_kicker", "Start: Überschrift"),
+                    ("start_sub", "Start: Unterzeile"),
+                    ("card_sub", "Chat-Szene: Unterzeile"),
+                    ("pause_title", "Pause: Überschrift"),
+                    ("pause_sub", "Pause: Unterzeile"),
+                    ("end_title", "Ende: Überschrift"),
+                    ("end_sub", "Ende: Unterzeile"),
+                    ("goal_label", "Follower-Label"),
+                    ("alert_kicker", "Alert: Kicker"),
+                    ("alert_follow", "Alert: Follow"),
+                    ("alert_sub", "Alert: Abo"),
+                    ("alert_gift", "Alert: Gift"),
+                    ("alert_raid", "Alert: Raid"),
+                ] {
+                    ui.label(label);
+                    let mut v = texts.get(key).cloned().unwrap_or_default();
+                    if ui.add(egui::TextEdit::singleline(&mut v).desired_width(380.0)).changed() {
+                        texts.insert(key.to_string(), v);
+                    }
+                    ui.end_row();
+                }
+            });
+
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.button("Alles speichern").clicked() {
+                    let body = serde_json::json!({
+                        "texts": texts,
+                        "splash": self.ov_splash,
+                        "goal": self.ov_goal,
+                        "chat_seconds": self.ov_chatsec,
+                        "chat_max": self.ov_chatmax
+                    });
+                    self.post("/api/overlay", body);
+                }
+                ui.weak("wirkt sofort im Stream");
+            });
+
+            ui.add_space(12.0);
+            ui.separator();
+            ui.label("Alerts testen");
+            ui.horizontal(|ui| {
+                for (label, kind) in [("Test", "test"), ("Follow", "follow"), ("Abo", "sub"),
+                                      ("Gift", "gift"), ("Raid", "raid")] {
+                    if ui.button(label).clicked() {
+                        let body = match kind {
+                            "follow" => serde_json::json!({"type":"follow","user":"TestFollower"}),
+                            "sub" => serde_json::json!({"type":"sub","user":"TestAbo","sub":"Tier 1"}),
+                            "gift" => serde_json::json!({"type":"gift","user":"TestGift","gift":"Rose","count":3}),
+                            "raid" => serde_json::json!({"type":"raid","user":"TestRaid","count":12}),
+                            _ => serde_json::json!({"type":"test"}),
+                        };
+                        self.post("/api/overlay/event", body);
+                    }
+                }
+                if ui.button("Chat leeren").clicked() {
+                    self.post("/api/overlay/clear", serde_json::json!({}));
+                    self.note("Chat geleert");
+                }
+            });
         });
     }
 
