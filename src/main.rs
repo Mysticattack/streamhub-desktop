@@ -77,6 +77,48 @@ struct Config {
 }
 
 #[derive(Deserialize, Serialize, Default, Clone, Debug)]
+struct TwInfo {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    game: String,
+    #[serde(default)]
+    language: String,
+    #[serde(default)]
+    ok: bool,
+}
+
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
+struct YtInfo {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    privacy: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    ok: bool,
+}
+
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
+struct StreamInfo {
+    #[serde(default)]
+    twitch: TwInfo,
+    #[serde(default)]
+    youtube: YtInfo,
+    #[serde(default)]
+    ok: bool,
+}
+
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
+struct InfoResp {
+    #[serde(default)]
+    info: StreamInfo,
+}
+
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
 struct ActItem {
     t: String,
     kind: String,
@@ -227,6 +269,7 @@ struct Shared {
     config: Option<Config>,
     sessions: Vec<Session>,
     activity: Vec<ActItem>,
+    info: Option<StreamInfo>,
     error: String,
     updated: f64,
 }
@@ -268,6 +311,9 @@ fn spawn_poller(ctx: egui::Context, local: Arc<Mutex<Local>>, shared: SharedRef)
         if let Ok(a) = api_get::<Activity>(&base, &token, "/api/activity") {
             next.activity = a.items;
         }
+        if let Ok(i) = api_get::<InfoResp>(&base, &token, "/api/streaminfo") {
+            next.info = Some(i.info);
+        }
         next.error = err;
         next.updated = Instant::now().elapsed().as_secs_f64();
         let prev_obs = shared.lock().unwrap().obs_streaming;
@@ -292,6 +338,7 @@ fn spawn_poller(ctx: egui::Context, local: Arc<Mutex<Local>>, shared: SharedRef)
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
     Status,
+    Infos,
     Chat,
     Szenen,
     Ziele,
@@ -315,6 +362,12 @@ struct App {
     yt_id: String,
     yt_secret: String,
     yt_state: String,
+    inf_tw_title: String,
+    inf_tw_game: String,
+    inf_yt_title: String,
+    inf_yt_desc: String,
+    inf_loaded: bool,
+    big: bool,
     chat_platform: bool,   // false = Twitch, true = YouTube
     chat_text: String,
     current_scene: String,
@@ -340,6 +393,12 @@ impl App {
             yt_id: String::new(),
             yt_secret: String::new(),
             yt_state: String::new(),
+            inf_tw_title: String::new(),
+            inf_tw_game: String::new(),
+            inf_yt_title: String::new(),
+            inf_yt_desc: String::new(),
+            inf_loaded: false,
+            big: false,
             chat_platform: false,
             chat_text: String::new(),
             current_scene: String::new(),
@@ -414,6 +473,7 @@ impl eframe::App for App {
         let config = shared.config.clone();
         let sessions = shared.sessions.clone();
         let activity = shared.activity.clone();
+        let info = shared.info.clone();
         let error = shared.error.clone();
         drop(shared);
 
@@ -438,6 +498,9 @@ impl eframe::App for App {
                         ui.colored_label(egui::Color32::from_rgb(220, 120, 120), "keine Verbindung");
                     }
                 }
+                if ui.button("Großes Fenster").clicked() {
+                    self.big = true;
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if !error.is_empty() {
                         ui.colored_label(egui::Color32::from_rgb(230, 150, 150), &error);
@@ -454,6 +517,7 @@ impl eframe::App for App {
             ui.add_space(8.0);
             for (t, name) in [
                 (Tab::Status, "Status"),
+                (Tab::Infos, "Infos"),
                 (Tab::Chat, "Chat"),
                 (Tab::Szenen, "Szenen"),
                 (Tab::Ziele, "Ziele"),
@@ -472,6 +536,7 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Status => self.ui_status(ui, &status, &activity),
+            Tab::Infos => self.ui_infos(ui, &info),
             Tab::Chat => self.ui_chat(ui),
             Tab::Szenen => self.ui_szenen(ui),
             Tab::Ziele => self.ui_ziele(ui, &status, &config),
@@ -480,6 +545,27 @@ impl eframe::App for App {
             Tab::Sitzungen => self.ui_sitzungen(ui, &sessions),
             Tab::Einstellungen => self.ui_einstellungen(ui, &config),
         });
+
+        if self.big {
+            let mut open = true;
+            let st2 = status.clone();
+            let act2 = activity.clone();
+            ctx.show_viewport_immediate(
+                egui::ViewportId::from_hash_of("gross"),
+                egui::ViewportBuilder::default()
+                    .with_title("StreamHub Übersicht")
+                    .with_inner_size([1280.0, 860.0]),
+                |ctx2, _class| {
+                    self.ui_big(ctx2, &st2, &act2);
+                    if ctx2.input(|i| i.viewport().close_requested()) {
+                        open = false;
+                    }
+                },
+            );
+            if !open {
+                self.big = false;
+            }
+        }
 
         if self.tick.elapsed() >= Duration::from_millis(500) {
             self.tick = Instant::now();
@@ -600,6 +686,136 @@ impl App {
         });
     }
 
+
+
+    fn ui_infos(&mut self, ui: &mut egui::Ui, info: &Option<StreamInfo>) {
+        ui.heading("Stream-Infos");
+        ui.add_space(6.0);
+        if let Some(i) = info {
+            if !self.inf_loaded {
+                self.inf_tw_title = i.twitch.title.clone();
+                self.inf_tw_game = i.twitch.game.clone();
+                self.inf_yt_title = i.youtube.title.clone();
+                self.inf_yt_desc = i.youtube.description.clone();
+                self.inf_loaded = true;
+            }
+        }
+        ui.label("Twitch");
+        ui.horizontal(|ui| {
+            ui.label("Titel");
+            ui.add(egui::TextEdit::singleline(&mut self.inf_tw_title).desired_width(520.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Kategorie");
+            ui.add(egui::TextEdit::singleline(&mut self.inf_tw_game).desired_width(300.0));
+        });
+        ui.add_space(10.0);
+        ui.label("YouTube");
+        ui.horizontal(|ui| {
+            ui.label("Titel");
+            ui.add(egui::TextEdit::singleline(&mut self.inf_yt_title).desired_width(520.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Beschreibung");
+            ui.add(egui::TextEdit::multiline(&mut self.inf_yt_desc).desired_width(520.0).desired_rows(3));
+        });
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui.button("Speichern").clicked() {
+                let body = serde_json::json!({
+                    "twitch_title": self.inf_tw_title,
+                    "twitch_game": self.inf_tw_game,
+                    "youtube_title": self.inf_yt_title,
+                    "youtube_description": self.inf_yt_desc
+                });
+                self.post("/api/streaminfo", body);
+                self.inf_loaded = false;
+            }
+            if ui.button("Neu laden").clicked() {
+                self.inf_loaded = false;
+            }
+        });
+        ui.weak("Twitch-Titel/Kategorie brauchen die Freigabe channel:manage:broadcast.");
+        if let Some(i) = info {
+            ui.add_space(8.0);
+            ui.label(format!("YouTube-Status: {} / {}", i.youtube.state, i.youtube.privacy));
+        }
+    }
+
+    fn ui_big(&mut self, ctx: &egui::Context, st: &Option<Status>, activity: &[ActItem]) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.heading("StreamHub");
+                ui.separator();
+                match st {
+                    Some(s) if s.live => ui.colored_label(egui::Color32::from_rgb(90, 220, 90), "LIVE"),
+                    Some(_) => ui.colored_label(egui::Color32::GRAY, "offline"),
+                    None => ui.colored_label(egui::Color32::from_rgb(220, 120, 120), "keine Verbindung"),
+                };
+                if let Some(s) = st {
+                    if s.live {
+                        ui.label(format!("{}  (Start {})", hms(s.duration as f64), s.started_at));
+                    }
+                }
+            });
+            ui.separator();
+            if let Some(s) = st {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label("Heute gesamt");
+                        ui.heading(hms(s.today as f64));
+                        ui.label("Follower");
+                        ui.heading(match (s.followers, s.goal) {
+                            (Some(f), Some(g)) => format!("{} / {}", f, g),
+                            (Some(f), None) => format!("{}", f),
+                            _ => "-".into(),
+                        });
+                    });
+                    ui.separator();
+                    ui.vertical(|ui| {
+                        ui.label("Ziele");
+                        egui::Grid::new("big_dest").num_columns(4).show(ui, |ui| {
+                            for d in &s.destinations {
+                                ui.label(&d.name);
+                                if d.running {
+                                    ui.colored_label(egui::Color32::from_rgb(90, 220, 90), "laeuft");
+                                } else if d.enabled {
+                                    ui.colored_label(egui::Color32::from_rgb(200, 200, 120), "wartet");
+                                } else {
+                                    ui.weak("aus");
+                                }
+                                ui.label(d.metrics.get("bitrate").cloned().unwrap_or_else(|| "-".into()));
+                                ui.label(d.metrics.get("drop_frames").cloned().unwrap_or_else(|| "-".into()));
+                                ui.end_row();
+                            }
+                        });
+                    });
+                    ui.separator();
+                    ui.vertical(|ui| {
+                        ui.label("Szene / Musik");
+                        ui.label(s.scene.clone().unwrap_or_else(|| "-".into()));
+                        ui.label(match &s.nowplaying {
+                            Some(t) if !t.is_empty() => t.clone(),
+                            _ => "-".into(),
+                        });
+                        ui.label(format!("Server-Last {:.2} · Speicher {:.0} GB", s.load, s.disk_free_gb));
+                    });
+                });
+            }
+            ui.separator();
+            ui.label("Aktivitaet");
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for a in activity.iter().rev().take(30) {
+                    ui.horizontal(|ui| {
+                        ui.monospace(&a.t);
+                        ui.weak(&a.kind);
+                        ui.label(&a.text);
+                    });
+                }
+            });
+        });
+    }
 
     fn ui_chat(&mut self, ui: &mut egui::Ui) {
         ui.heading("Chat");
