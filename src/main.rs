@@ -498,8 +498,9 @@ impl eframe::App for App {
                         ui.colored_label(egui::Color32::from_rgb(220, 120, 120), "keine Verbindung");
                     }
                 }
-                if ui.button("Großes Fenster").clicked() {
-                    self.big = true;
+                if ui.button(if self.big { "Übersicht schließen" } else { "Übersicht" }).clicked() {
+                    self.big = !self.big;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(self.big));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if !error.is_empty() {
@@ -512,6 +513,17 @@ impl eframe::App for App {
             });
             ui.add_space(4.0);
         });
+
+        if self.big {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                self.ui_dashboard(ui, &status, &activity);
+            });
+            if self.tick.elapsed() >= Duration::from_millis(500) {
+                self.tick = Instant::now();
+                ctx.request_repaint_after(Duration::from_millis(500));
+            }
+            return;
+        }
 
         egui::SidePanel::left("tabs").resizable(false).default_width(170.0).show(ctx, |ui| {
             ui.add_space(8.0);
@@ -545,27 +557,6 @@ impl eframe::App for App {
             Tab::Sitzungen => self.ui_sitzungen(ui, &sessions),
             Tab::Einstellungen => self.ui_einstellungen(ui, &config),
         });
-
-        if self.big {
-            let mut open = true;
-            let st2 = status.clone();
-            let act2 = activity.clone();
-            ctx.show_viewport_immediate(
-                egui::ViewportId::from_hash_of("gross"),
-                egui::ViewportBuilder::default()
-                    .with_title("StreamHub Übersicht")
-                    .with_inner_size([1280.0, 860.0]),
-                |ctx2, _class| {
-                    self.ui_big(ctx2, &st2, &act2);
-                    if ctx2.input(|i| i.viewport().close_requested()) {
-                        open = false;
-                    }
-                },
-            );
-            if !open {
-                self.big = false;
-            }
-        }
 
         if self.tick.elapsed() >= Duration::from_millis(500) {
             self.tick = Instant::now();
@@ -742,71 +733,115 @@ impl App {
         }
     }
 
-    fn ui_big(&mut self, ctx: &egui::Context, st: &Option<Status>, activity: &[ActItem]) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.heading("StreamHub");
-                ui.separator();
-                match st {
-                    Some(s) if s.live => ui.colored_label(egui::Color32::from_rgb(90, 220, 90), "LIVE"),
-                    Some(_) => ui.colored_label(egui::Color32::GRAY, "offline"),
-                    None => ui.colored_label(egui::Color32::from_rgb(220, 120, 120), "keine Verbindung"),
-                };
-                if let Some(s) = st {
-                    if s.live {
-                        ui.label(format!("{}  (Start {})", hms(s.duration as f64), s.started_at));
-                    }
-                }
-            });
-            ui.separator();
-            if let Some(s) = st {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label("Heute gesamt");
-                        ui.heading(hms(s.today as f64));
-                        ui.label("Follower");
-                        ui.heading(match (s.followers, s.goal) {
-                            (Some(f), Some(g)) => format!("{} / {}", f, g),
-                            (Some(f), None) => format!("{}", f),
-                            _ => "-".into(),
-                        });
-                    });
-                    ui.separator();
-                    ui.vertical(|ui| {
-                        ui.label("Ziele");
-                        egui::Grid::new("big_dest").num_columns(4).show(ui, |ui| {
-                            for d in &s.destinations {
-                                ui.label(&d.name);
-                                if d.running {
-                                    ui.colored_label(egui::Color32::from_rgb(90, 220, 90), "laeuft");
-                                } else if d.enabled {
-                                    ui.colored_label(egui::Color32::from_rgb(200, 200, 120), "wartet");
-                                } else {
-                                    ui.weak("aus");
-                                }
-                                ui.label(d.metrics.get("bitrate").cloned().unwrap_or_else(|| "-".into()));
-                                ui.label(d.metrics.get("drop_frames").cloned().unwrap_or_else(|| "-".into()));
-                                ui.end_row();
-                            }
-                        });
-                    });
-                    ui.separator();
-                    ui.vertical(|ui| {
-                        ui.label("Szene / Musik");
-                        ui.label(s.scene.clone().unwrap_or_else(|| "-".into()));
-                        ui.label(match &s.nowplaying {
-                            Some(t) if !t.is_empty() => t.clone(),
-                            _ => "-".into(),
-                        });
-                        ui.label(format!("Server-Last {:.2} · Speicher {:.0} GB", s.load, s.disk_free_gb));
-                    });
-                });
+
+    fn ui_dashboard(&mut self, ui: &mut egui::Ui, st: &Option<Status>, activity: &[ActItem]) {
+        let ctx = ui.ctx().clone();
+        ui.horizontal(|ui| {
+            ui.heading("Übersicht");
+            if ui.button("Vollbild").clicked() {
+                let fs = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fs));
             }
             ui.separator();
-            ui.label("Aktivitaet");
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for a in activity.iter().rev().take(30) {
+            match st {
+                Some(s) if s.live => {
+                    ui.colored_label(egui::Color32::from_rgb(90, 220, 90), "● LIVE");
+                    ui.label(format!("{}   (Start {})", hms(s.duration as f64), s.started_at));
+                }
+                Some(_) => {
+                    ui.colored_label(egui::Color32::GRAY, "● offline");
+                }
+                None => {
+                    ui.colored_label(egui::Color32::from_rgb(220, 120, 120), "keine Verbindung");
+                }
+            }
+        });
+        ui.separator();
+
+        ui.columns(3, |cols| {
+            // Spalte 1: Kennzahlen
+            let ui = &mut cols[0];
+            ui.label("Laufzeit");
+            ui.heading(hms(st.as_ref().map(|s| s.duration as f64).unwrap_or(0.0)));
+            ui.label("Heute gesamt");
+            ui.heading(hms(st.as_ref().map(|s| s.today as f64).unwrap_or(0.0)));
+            ui.add_space(6.0);
+            if let Some(s) = st {
+                ui.label(format!(
+                    "Follower: {}",
+                    match (s.followers, s.goal) {
+                        (Some(f), Some(g)) => format!("{} / {}", f, g),
+                        (Some(f), None) => format!("{}", f),
+                        _ => "-".to_string(),
+                    }
+                ));
+                ui.label(format!("Szene: {}", s.scene.clone().unwrap_or_else(|| "-".into())));
+                ui.label(match &s.nowplaying {
+                    Some(t) if !t.is_empty() => format!("Musik: {}", t),
+                    _ => "Musik: -".to_string(),
+                });
+                ui.label(format!("Server: Last {:.2}, {:.0} GB frei", s.load, s.disk_free_gb));
+                ui.add_space(8.0);
+                ui.label("Ziele");
+                for d in &s.destinations {
+                    ui.horizontal(|ui| {
+                        ui.monospace(format!("{:<10}", d.name));
+                        if d.running {
+                            ui.colored_label(egui::Color32::from_rgb(90, 220, 90), "läuft");
+                        } else if d.enabled {
+                            ui.colored_label(egui::Color32::from_rgb(200, 200, 120), "wartet");
+                        } else {
+                            ui.weak("aus");
+                        }
+                        ui.label(d.metrics.get("bitrate").cloned().unwrap_or_else(|| "-".into()));
+                        ui.weak(format!("drop {}", d.metrics.get("drop_frames").cloned().unwrap_or_else(|| "-".into())));
+                    });
+                }
+            }
+
+            // Spalte 2: Chat senden
+            let ui = &mut cols[1];
+            ui.label("Chat schreiben");
+            ui.horizontal(|ui| {
+                if ui.selectable_label(!self.chat_platform, "Twitch").clicked() {
+                    self.chat_platform = false;
+                }
+                if ui.selectable_label(self.chat_platform, "YouTube").clicked() {
+                    self.chat_platform = true;
+                }
+            });
+            ui.add_space(6.0);
+            ui.add(
+                egui::TextEdit::multiline(&mut self.chat_text)
+                    .hint_text("Nachricht")
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY),
+            );
+            let ziel = if self.chat_platform { "YouTube" } else { "Twitch" };
+            if ui.button(format!("An {} senden", ziel)).clicked() && !self.chat_text.trim().is_empty() {
+                let plat = if self.chat_platform { "youtube" } else { "twitch" };
+                let body = serde_json::json!({"text": self.chat_text, "platform": plat});
+                let (base, token) = {
+                    let l = self.local.lock().unwrap();
+                    (l.server.clone(), l.token.clone())
+                };
+                match api_post(&base, &token, "/api/chat", &body) {
+                    Ok(_) => {
+                        self.note(format!("an {} gesendet", plat));
+                        self.chat_text.clear();
+                    }
+                    Err(e) => self.note(format!("Chat: {}", e)),
+                }
+            }
+            if !self.msg.is_empty() && self.msg_time.elapsed().as_secs() < 4 {
+                ui.colored_label(egui::Color32::from_rgb(150, 220, 150), &self.msg);
+            }
+
+            // Spalte 3: Aktivitaet
+            let ui = &mut cols[2];
+            ui.label("Aktivität");
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                for a in activity.iter().rev().take(40) {
                     ui.horizontal(|ui| {
                         ui.monospace(&a.t);
                         ui.weak(&a.kind);
