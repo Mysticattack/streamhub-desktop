@@ -515,8 +515,19 @@ impl eframe::App for App {
         });
 
         if self.big {
+            egui::TopBottomPanel::bottom("steuer")
+                .resizable(true)
+                .default_height(300.0)
+                .min_height(120.0)
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    ui.label("Einstellen");
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        self.ui_steuerung(ui, &status, &config);
+                    });
+                });
             egui::CentralPanel::default().show(ctx, |ui| {
-                self.ui_dashboard(ui, &status, &activity);
+                self.ui_dashboard(ui, &status, &activity, &config);
             });
             if self.tick.elapsed() >= Duration::from_millis(500) {
                 self.tick = Instant::now();
@@ -734,7 +745,8 @@ impl App {
     }
 
 
-    fn ui_dashboard(&mut self, ui: &mut egui::Ui, st: &Option<Status>, activity: &[ActItem]) {
+    fn ui_dashboard(&mut self, ui: &mut egui::Ui, st: &Option<Status>, activity: &[ActItem],
+                    cfg_now: &Option<Config>) {
         let ctx = ui.ctx().clone();
         ui.horizontal(|ui| {
             ui.heading("Übersicht");
@@ -849,6 +861,139 @@ impl App {
                     });
                 }
             });
+        });
+
+    }
+
+
+    fn ui_steuerung(&mut self, ui: &mut egui::Ui, st: &Option<Status>, cfg: &Option<Config>) {
+        ui.columns(3, |cols| {
+            // --- Spalte 1: Stream + Szenen
+            let ui = &mut cols[0];
+            ui.label("Stream");
+            let pw = self.local.lock().unwrap().obs_password.clone();
+            let obs_state = self.shared.lock().unwrap().obs_streaming;
+            ui.horizontal(|ui| {
+                if ui.button("Start").clicked() {
+                    self.start_stop_obs(&pw, true);
+                }
+                if ui.button("Stopp").clicked() {
+                    self.start_stop_obs(&pw, false);
+                }
+                ui.weak(match obs_state {
+                    Some(true) => "sendet",
+                    Some(false) => "bereit",
+                    None => "OBS?",
+                });
+            });
+            ui.add_space(8.0);
+            ui.label("Szene");
+            if self.scenes.is_empty() && !pw.is_empty() {
+                if let Ok(r) = obs::obs_request(&pw, "GetSceneList") {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&r) {
+                        if let Some(list) = v["d"]["responseData"]["scenes"].as_array() {
+                            self.scenes = list
+                                .iter()
+                                .filter_map(|x| x.get("sceneName").and_then(|n| n.as_str()).map(String::from))
+                                .collect();
+                        }
+                        if let Some(cur) = v["d"]["responseData"]["currentProgramSceneName"].as_str() {
+                            self.current_scene = cur.to_string();
+                        }
+                    }
+                }
+            }
+            for name in self.scenes.clone() {
+                let aktiv = name == self.current_scene;
+                if ui.selectable_label(aktiv, &name).clicked() && !aktiv {
+                    let body = serde_json::json!({"sceneName": name});
+                    if obs::obs_request_json(&pw, "SetCurrentProgramScene", body).is_ok() {
+                        self.current_scene = name.clone();
+                        self.note(format!("Szene: {}", name));
+                    }
+                }
+            }
+
+            // --- Spalte 2: Ziele + Aufnahme
+            let ui = &mut cols[1];
+            ui.label("Ziele");
+            if let Some(s) = st {
+                for d in &s.destinations {
+                    ui.horizontal(|ui| {
+                        ui.monospace(format!("{:<10}", d.name));
+                        if d.running {
+                            ui.colored_label(egui::Color32::from_rgb(90, 220, 90), "läuft");
+                        } else if d.enabled {
+                            ui.colored_label(egui::Color32::from_rgb(200, 200, 120), "wartet");
+                        } else {
+                            ui.weak("aus");
+                        }
+                        if ui.small_button(if d.enabled { "aus" } else { "an" }).clicked() {
+                            self.post("/api/toggle", serde_json::json!({"name": d.name}));
+                        }
+                    });
+                }
+            }
+            ui.add_space(8.0);
+            if let Some(c) = cfg {
+                if self.draft.is_none() {
+                    self.draft = Some(c.clone());
+                }
+                let mut rec_body: Option<serde_json::Value> = None;
+                let mut enc_body: Option<serde_json::Value> = None;
+                {
+                    let d = self.draft.as_mut().unwrap();
+                    if ui.checkbox(&mut d.record.enabled, "Aufnahme auf dem Server").changed() {
+                        rec_body = Some(serde_json::json!({"record": {
+                            "enabled": d.record.enabled, "chunk_minutes": d.record.chunk_minutes}}));
+                    }
+                ui.add_space(6.0);
+                ui.label("Kodierung");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut d.transcode.height, 1080, "1080p");
+                    ui.selectable_value(&mut d.transcode.height, 900, "900p");
+                    ui.selectable_value(&mut d.transcode.height, 720, "720p");
+                });
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut d.transcode.fps, 60, "60 fps");
+                    ui.selectable_value(&mut d.transcode.fps, 30, "30 fps");
+                });
+                ui.add(egui::Slider::new(&mut d.transcode.bitrate_kbps, 2000..=9000).suffix(" kbps"));
+                    if ui.button("Kodierung speichern").clicked() {
+                        enc_body = Some(serde_json::json!({"transcode": d.transcode}));
+                    }
+                }
+                if let Some(b) = rec_body {
+                    self.post("/api/config", b);
+                }
+                if let Some(b) = enc_body {
+                    self.post("/api/config", b);
+                }
+            }
+
+            // --- Spalte 3: Infos
+            let ui = &mut cols[2];
+            ui.label("Stream-Infos");
+            ui.horizontal(|ui| {
+                ui.label("Twitch-Titel");
+                ui.add(egui::TextEdit::singleline(&mut self.inf_tw_title).desired_width(f32::INFINITY));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Kategorie");
+                ui.add(egui::TextEdit::singleline(&mut self.inf_tw_game).desired_width(f32::INFINITY));
+            });
+            ui.horizontal(|ui| {
+                ui.label("YouTube-Titel");
+                ui.add(egui::TextEdit::singleline(&mut self.inf_yt_title).desired_width(f32::INFINITY));
+            });
+            if ui.button("Infos speichern").clicked() {
+                let body = serde_json::json!({
+                    "twitch_title": self.inf_tw_title,
+                    "twitch_game": self.inf_tw_game,
+                    "youtube_title": self.inf_yt_title
+                });
+                self.post("/api/streaminfo", body);
+            }
         });
     }
 
