@@ -3,6 +3,8 @@
 //! Zeigt Live-Status und Laufzeit, verwaltet Ziele, Kodierung, Aufnahme und
 //! zeigt die Sitzungs-Historie. Spricht die HTTP-API des Servers.
 
+mod obs;
+
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -120,6 +122,8 @@ struct Sessions {
 struct Local {
     server: String,
     token: String,
+    #[serde(default)]
+    obs_password: String,
 }
 
 impl Default for Local {
@@ -127,6 +131,7 @@ impl Default for Local {
         Local {
             server: "https://grafana.allo.bet/hub".to_string(),
             token: String::new(),
+            obs_password: String::new(),
         }
     }
 }
@@ -196,6 +201,7 @@ fn urlencode(s: &str) -> String {
 
 #[derive(Default)]
 struct Shared {
+    obs_streaming: Option<bool>,
     status: Option<Status>,
     config: Option<Config>,
     sessions: Vec<Session>,
@@ -206,10 +212,12 @@ struct Shared {
 type SharedRef = Arc<Mutex<Shared>>;
 
 fn spawn_poller(ctx: egui::Context, local: Arc<Mutex<Local>>, shared: SharedRef) {
-    std::thread::spawn(move || loop {
-        let (base, token) = {
+    std::thread::spawn(move || {
+        let mut tick: u32 = 0;
+        loop {
+        let (base, token, obspw) = {
             let l = local.lock().unwrap();
-            (l.server.clone(), l.token.clone())
+            (l.server.clone(), l.token.clone(), l.obs_password.clone())
         };
         let mut next = Shared::default();
         let mut err = String::new();
@@ -237,12 +245,20 @@ fn spawn_poller(ctx: egui::Context, local: Arc<Mutex<Local>>, shared: SharedRef)
         }
         next.error = err;
         next.updated = Instant::now().elapsed().as_secs_f64();
+        let prev_obs = shared.lock().unwrap().obs_streaming;
+        if !obspw.is_empty() && tick % 3 == 0 {
+            next.obs_streaming = obs::obs_is_streaming(&obspw);
+        } else {
+            next.obs_streaming = prev_obs;
+        }
+        tick = tick.wrapping_add(1);
         {
             let mut g = shared.lock().unwrap();
             *g = next;
         }
         ctx.request_repaint();
         std::thread::sleep(Duration::from_secs(2));
+        }
     });
 }
 
@@ -304,6 +320,18 @@ impl App {
         match api_post(&base, &token, path, &body) {
             Ok(_) => self.note("gespeichert"),
             Err(e) => self.note(format!("Fehler: {}", e)),
+        }
+    }
+
+    fn start_stop_obs(&mut self, pw: &str, start: bool) {
+        if pw.is_empty() {
+            self.note("OBS-Passwort fehlt (Einstellungen)");
+            return;
+        }
+        let req = if start { "StartStream" } else { "StopStream" };
+        match obs::obs_request(pw, req) {
+            Ok(_) => self.note(if start { "Stream gestartet" } else { "Stream gestoppt" }),
+            Err(e) => self.note(format!("OBS: {}", e)),
         }
     }
 
@@ -393,6 +421,28 @@ impl eframe::App for App {
 impl App {
     fn ui_status(&mut self, ui: &mut egui::Ui, st: &Option<Status>) {
         ui.heading("Überblick");
+        ui.add_space(6.0);
+        let obs_state = self.shared.lock().unwrap().obs_streaming;
+        ui.horizontal(|ui| {
+            let lbl = match obs_state {
+                Some(true) => "OBS sendet gerade",
+                Some(false) => "OBS bereit",
+                None => "OBS nicht erreichbar (Passwort in den Einstellungen prüfen)",
+            };
+            ui.label(lbl);
+            ui.separator();
+            let (base_local, pw) = {
+                let l = self.local.lock().unwrap();
+                (l.server.clone(), l.obs_password.clone())
+            };
+            let _ = base_local;
+            if ui.button("Stream starten").clicked() {
+                self.start_stop_obs(&pw, true);
+            }
+            if ui.button("Stream stoppen").clicked() {
+                self.start_stop_obs(&pw, false);
+            }
+        });
         ui.add_space(8.0);
         let Some(s) = st else {
             ui.label("Noch keine Daten – Server-Adresse und Token unter Einstellungen prüfen.");
@@ -617,6 +667,19 @@ impl App {
             *self.local.lock().unwrap() = l.clone();
             local_save(&l);
         }
+        ui.horizontal(|ui| {
+            ui.label("OBS-Passwort");
+            let before = l.obs_password.clone();
+            ui.add(
+                egui::TextEdit::singleline(&mut l.obs_password)
+                    .password(true)
+                    .desired_width(380.0),
+            );
+            if l.obs_password != before {
+                *self.local.lock().unwrap() = l.clone();
+                local_save(&l);
+            }
+        });
         ui.add_space(10.0);
         ui.separator();
         if let Some(c) = cfg {
