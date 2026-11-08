@@ -157,7 +157,19 @@ struct Recording {
 }
 
 #[derive(Deserialize, Serialize, Default, Clone, Debug)]
+struct SceneTimer {
+    #[serde(default)]
+    scene: String,
+    #[serde(default)]
+    left: i64,
+    #[serde(default)]
+    next: String,
+}
+
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
 struct Status {
+    #[serde(default)]
+    scene_timer: SceneTimer,
     live: bool,
     duration: u64,
     started_at: String,
@@ -377,6 +389,9 @@ struct App {
     inf_yt_privacy: String,
     inf_yt_latency: String,
     inf_yt_kids: bool,
+    sc_min: i64,
+    sc_next: String,
+    sc_loaded: bool,
     inf_loaded: bool,
     big: bool,
     chat_platform: bool,   // false = Twitch, true = YouTube
@@ -413,6 +428,9 @@ impl App {
             inf_yt_privacy: "public".into(),
             inf_yt_latency: "low".into(),
             inf_yt_kids: false,
+            sc_min: 0,
+            sc_next: String::new(),
+            sc_loaded: false,
             inf_loaded: false,
             big: false,
             chat_platform: false,
@@ -1156,9 +1174,59 @@ impl App {
                 }
             }
         }
+        ui.add_space(14.0);
+        ui.separator();
+        ui.label("Einstellungen für die laufende Szene");
+        let aktiv = self.current_scene.clone();
+        if aktiv.is_empty() {
+            ui.weak("Keine Szene aktiv erkannt.");
+        } else {
+            ui.monospace(&aktiv);
+            if !self.sc_loaded {
+                if let Some(st) = &self.shared.lock().unwrap().status {
+                    if st.scene_timer.scene == aktiv {
+                        self.sc_min = (st.scene_timer.left as f64 / 60.0).round() as i64;
+                        self.sc_next = st.scene_timer.next.clone();
+                    }
+                }
+                self.sc_loaded = true;
+            }
+            ui.horizontal(|ui| {
+                ui.label("Timer (Minuten)");
+                ui.add(egui::DragValue::new(&mut self.sc_min).range(0..=600));
+                ui.weak("0 = kein Timer");
+            });
+            ui.horizontal(|ui| {
+                ui.label("danach Szene");
+                egui::ComboBox::from_id_salt("next_scene")
+                    .selected_text(if self.sc_next.is_empty() { "– keine –".to_string() } else { self.sc_next.clone() })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.sc_next, String::new(), "– keine –");
+                        for n in self.scenes.clone() {
+                            if n != aktiv {
+                                ui.selectable_value(&mut self.sc_next, n.clone(), n);
+                            }
+                        }
+                    });
+            });
+            if ui.button("Regel speichern").clicked() {
+                let body = serde_json::json!({"scene": aktiv, "minutes": self.sc_min, "next": self.sc_next});
+                self.post("/api/scenes", body);
+                self.note("Szenen-Regel gespeichert");
+            }
+            if let Some(st) = &self.shared.lock().unwrap().status.clone() {
+                let t = &st.scene_timer;
+                if !t.scene.is_empty() && t.left > 0 {
+                    ui.add_space(6.0);
+                    ui.colored_label(egui::Color32::from_rgb(220, 200, 120),
+                        format!("Timer läuft: {} bis {}", hms(t.left as f64), if t.next.is_empty() { "–".to_string() } else { t.next.clone() }));
+                }
+            }
+        }
         ui.add_space(8.0);
         if ui.button("Liste neu laden").clicked() {
             self.scenes.clear();
+            self.sc_loaded = false;
         }
     }
 
