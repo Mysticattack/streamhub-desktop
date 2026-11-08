@@ -85,6 +85,8 @@ struct TwInfo {
     #[serde(default)]
     language: String,
     #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
     ok: bool,
 }
 
@@ -96,6 +98,10 @@ struct YtInfo {
     description: String,
     #[serde(default)]
     privacy: String,
+    #[serde(default)]
+    made_for_kids: Option<bool>,
+    #[serde(default)]
+    latency: String,
     #[serde(default)]
     state: String,
     #[serde(default)]
@@ -366,6 +372,11 @@ struct App {
     inf_tw_game: String,
     inf_yt_title: String,
     inf_yt_desc: String,
+    inf_tw_lang: String,
+    inf_tw_tags: String,
+    inf_yt_privacy: String,
+    inf_yt_latency: String,
+    inf_yt_kids: bool,
     inf_loaded: bool,
     big: bool,
     chat_platform: bool,   // false = Twitch, true = YouTube
@@ -397,6 +408,11 @@ impl App {
             inf_tw_game: String::new(),
             inf_yt_title: String::new(),
             inf_yt_desc: String::new(),
+            inf_tw_lang: String::new(),
+            inf_tw_tags: String::new(),
+            inf_yt_privacy: "public".into(),
+            inf_yt_latency: "low".into(),
+            inf_yt_kids: false,
             inf_loaded: false,
             big: false,
             chat_platform: false,
@@ -699,6 +715,15 @@ impl App {
                 self.inf_tw_game = i.twitch.game.clone();
                 self.inf_yt_title = i.youtube.title.clone();
                 self.inf_yt_desc = i.youtube.description.clone();
+                self.inf_tw_lang = i.twitch.language.clone();
+                self.inf_tw_tags = i.twitch.tags.join(", ");
+                if !i.youtube.privacy.is_empty() {
+                    self.inf_yt_privacy = i.youtube.privacy.clone();
+                }
+                if !i.youtube.latency.is_empty() {
+                    self.inf_yt_latency = i.youtube.latency.clone();
+                }
+                self.inf_yt_kids = i.youtube.made_for_kids.unwrap_or(false);
                 self.inf_loaded = true;
             }
         }
@@ -711,6 +736,16 @@ impl App {
             ui.label("Kategorie");
             ui.add(egui::TextEdit::singleline(&mut self.inf_tw_game).desired_width(300.0));
         });
+        ui.horizontal(|ui| {
+            ui.label("Sprache");
+            ui.add(egui::TextEdit::singleline(&mut self.inf_tw_lang).desired_width(80.0));
+            ui.weak("z. B. de");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Tags");
+            ui.add(egui::TextEdit::singleline(&mut self.inf_tw_tags).desired_width(430.0));
+            ui.weak("mit Komma getrennt, max. 10");
+        });
         ui.add_space(10.0);
         ui.label("YouTube");
         ui.horizontal(|ui| {
@@ -721,14 +756,35 @@ impl App {
             ui.label("Beschreibung");
             ui.add(egui::TextEdit::multiline(&mut self.inf_yt_desc).desired_width(520.0).desired_rows(3));
         });
+        ui.horizontal(|ui| {
+            ui.label("Sichtbarkeit");
+            ui.selectable_value(&mut self.inf_yt_privacy, "public".into(), "öffentlich");
+            ui.selectable_value(&mut self.inf_yt_privacy, "unlisted".into(), "nicht gelistet");
+            ui.selectable_value(&mut self.inf_yt_privacy, "private".into(), "privat");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Latenz");
+            ui.selectable_value(&mut self.inf_yt_latency, "low".into(), "niedrig");
+            ui.selectable_value(&mut self.inf_yt_latency, "normal".into(), "normal");
+            ui.selectable_value(&mut self.inf_yt_latency, "ultraLow".into(), "sehr niedrig");
+            let mut kids = self.inf_yt_kids;
+            if ui.checkbox(&mut kids, "für Kinder gemacht").changed() {
+                self.inf_yt_kids = kids;
+            }
+        });
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             if ui.button("Speichern").clicked() {
                 let body = serde_json::json!({
                     "twitch_title": self.inf_tw_title,
                     "twitch_game": self.inf_tw_game,
+                    "twitch_language": self.inf_tw_lang,
+                    "twitch_tags": self.inf_tw_tags,
                     "youtube_title": self.inf_yt_title,
-                    "youtube_description": self.inf_yt_desc
+                    "youtube_description": self.inf_yt_desc,
+                    "youtube_privacy": self.inf_yt_privacy,
+                    "youtube_latency": self.inf_yt_latency,
+                    "youtube_made_for_kids": self.inf_yt_kids
                 });
                 self.post("/api/streaminfo", body);
                 self.inf_loaded = false;
@@ -806,7 +862,9 @@ impl App {
                             ui.weak("aus");
                         }
                         ui.label(d.metrics.get("bitrate").cloned().unwrap_or_else(|| "-".into()));
-                        ui.weak(format!("drop {}", d.metrics.get("drop_frames").cloned().unwrap_or_else(|| "-".into())));
+                        if ui.small_button(if d.enabled { "aus" } else { "an" }).clicked() {
+                            self.post("/api/toggle", serde_json::json!({"name": d.name}));
+                        }
                     });
                 }
             }
@@ -983,14 +1041,34 @@ impl App {
                 ui.add(egui::TextEdit::singleline(&mut self.inf_tw_game).desired_width(f32::INFINITY));
             });
             ui.horizontal(|ui| {
+                ui.label("Sprache");
+                ui.add(egui::TextEdit::singleline(&mut self.inf_tw_lang).desired_width(60.0));
+                ui.label("Tags");
+                ui.add(egui::TextEdit::singleline(&mut self.inf_tw_tags).desired_width(220.0));
+            });
+            ui.horizontal(|ui| {
                 ui.label("YouTube-Titel");
                 ui.add(egui::TextEdit::singleline(&mut self.inf_yt_title).desired_width(f32::INFINITY));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Sichtbar");
+                ui.selectable_value(&mut self.inf_yt_privacy, "public".into(), "öff.");
+                ui.selectable_value(&mut self.inf_yt_privacy, "unlisted".into(), "n. gelistet");
+                ui.selectable_value(&mut self.inf_yt_privacy, "private".into(), "privat");
+                ui.label("Latenz");
+                ui.selectable_value(&mut self.inf_yt_latency, "low".into(), "niedrig");
+                ui.selectable_value(&mut self.inf_yt_latency, "normal".into(), "normal");
             });
             if ui.button("Infos speichern").clicked() {
                 let body = serde_json::json!({
                     "twitch_title": self.inf_tw_title,
                     "twitch_game": self.inf_tw_game,
-                    "youtube_title": self.inf_yt_title
+                    "twitch_language": self.inf_tw_lang,
+                    "twitch_tags": self.inf_tw_tags,
+                    "youtube_title": self.inf_yt_title,
+                    "youtube_privacy": self.inf_yt_privacy,
+                    "youtube_latency": self.inf_yt_latency,
+                    "youtube_made_for_kids": self.inf_yt_kids
                 });
                 self.post("/api/streaminfo", body);
             }
