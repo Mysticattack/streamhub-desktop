@@ -77,6 +77,19 @@ struct Config {
 }
 
 #[derive(Deserialize, Serialize, Default, Clone, Debug)]
+struct ActItem {
+    t: String,
+    kind: String,
+    text: String,
+}
+
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
+struct Activity {
+    #[serde(default)]
+    items: Vec<ActItem>,
+}
+
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
 struct DestStatus {
     name: String,
     enabled: bool,
@@ -84,6 +97,8 @@ struct DestStatus {
     up: u64,
     err: String,
     url: String,
+    #[serde(default)]
+    metrics: std::collections::HashMap<String, String>,
 }
 
 #[derive(Deserialize, Serialize, Default, Clone, Debug)]
@@ -211,6 +226,7 @@ struct Shared {
     status: Option<Status>,
     config: Option<Config>,
     sessions: Vec<Session>,
+    activity: Vec<ActItem>,
     error: String,
     updated: f64,
 }
@@ -249,6 +265,9 @@ fn spawn_poller(ctx: egui::Context, local: Arc<Mutex<Local>>, shared: SharedRef)
             Ok(s) => next.sessions = s.sessions,
             Err(_) => {}
         }
+        if let Ok(a) = api_get::<Activity>(&base, &token, "/api/activity") {
+            next.activity = a.items;
+        }
         next.error = err;
         next.updated = Instant::now().elapsed().as_secs_f64();
         let prev_obs = shared.lock().unwrap().obs_streaming;
@@ -273,6 +292,7 @@ fn spawn_poller(ctx: egui::Context, local: Arc<Mutex<Local>>, shared: SharedRef)
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
     Status,
+    Chat,
     Szenen,
     Ziele,
     Kodierung,
@@ -295,6 +315,8 @@ struct App {
     yt_id: String,
     yt_secret: String,
     yt_state: String,
+    chat_platform: bool,   // false = Twitch, true = YouTube
+    chat_text: String,
     current_scene: String,
     msg: String,
     msg_time: Instant,
@@ -318,6 +340,8 @@ impl App {
             yt_id: String::new(),
             yt_secret: String::new(),
             yt_state: String::new(),
+            chat_platform: false,
+            chat_text: String::new(),
             current_scene: String::new(),
             msg: String::new(),
             msg_time: Instant::now(),
@@ -389,6 +413,7 @@ impl eframe::App for App {
         let status = shared.status.clone();
         let config = shared.config.clone();
         let sessions = shared.sessions.clone();
+        let activity = shared.activity.clone();
         let error = shared.error.clone();
         drop(shared);
 
@@ -429,6 +454,7 @@ impl eframe::App for App {
             ui.add_space(8.0);
             for (t, name) in [
                 (Tab::Status, "Status"),
+                (Tab::Chat, "Chat"),
                 (Tab::Szenen, "Szenen"),
                 (Tab::Ziele, "Ziele"),
                 (Tab::Kodierung, "Kodierung"),
@@ -445,7 +471,8 @@ impl eframe::App for App {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
-            Tab::Status => self.ui_status(ui, &status),
+            Tab::Status => self.ui_status(ui, &status, &activity),
+            Tab::Chat => self.ui_chat(ui),
             Tab::Szenen => self.ui_szenen(ui),
             Tab::Ziele => self.ui_ziele(ui, &status, &config),
             Tab::Kodierung => self.ui_kodierung(ui, &config),
@@ -462,7 +489,7 @@ impl eframe::App for App {
 }
 
 impl App {
-    fn ui_status(&mut self, ui: &mut egui::Ui, st: &Option<Status>) {
+    fn ui_status(&mut self, ui: &mut egui::Ui, st: &Option<Status>, activity: &[ActItem]) {
         ui.heading("Überblick");
         ui.add_space(6.0);
         let obs_state = self.shared.lock().unwrap().obs_streaming;
@@ -536,6 +563,82 @@ impl App {
             ui.label(if akt.is_empty() { "keine".into() } else { akt.join(", ") });
             ui.end_row();
         });
+
+        if !s.destinations.is_empty() {
+            ui.add_space(10.0);
+            ui.separator();
+            ui.label("Kennzahlen der Ziele");
+            egui::Grid::new("kpi").num_columns(5).spacing([18.0, 4.0]).show(ui, |ui| {
+                ui.strong("Ziel");
+                ui.strong("Bitrate");
+                ui.strong("fps");
+                ui.strong("verworfen");
+                ui.strong("Tempo");
+                ui.end_row();
+                for d in &s.destinations {
+                    ui.label(&d.name);
+                    ui.label(d.metrics.get("bitrate").cloned().unwrap_or_else(|| "-".into()));
+                    ui.label(d.metrics.get("fps").cloned().unwrap_or_else(|| "-".into()));
+                    ui.label(d.metrics.get("drop_frames").cloned().unwrap_or_else(|| "-".into()));
+                    ui.label(d.metrics.get("speed").cloned().unwrap_or_else(|| "-".into()));
+                    ui.end_row();
+                }
+            });
+        }
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.label("Aktivitaet");
+        egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+            for a in activity.iter().rev().take(20) {
+                ui.horizontal(|ui| {
+                    ui.monospace(&a.t);
+                    ui.weak(&a.kind);
+                    ui.label(&a.text);
+                });
+            }
+        });
+    }
+
+
+    fn ui_chat(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Chat");
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.selectable_label(!self.chat_platform, "Twitch").clicked() {
+                self.chat_platform = false;
+            }
+            if ui.selectable_label(self.chat_platform, "YouTube").clicked() {
+                self.chat_platform = true;
+            }
+        });
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            let hint = if self.chat_platform { "Nachricht an YouTube-Chat" } else { "Nachricht an Twitch-Chat" };
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut self.chat_text)
+                    .hint_text(hint)
+                    .desired_width(460.0),
+            );
+            let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (ui.button("Senden").clicked() || enter) && !self.chat_text.trim().is_empty() {
+                let plat = if self.chat_platform { "youtube" } else { "twitch" };
+                let body = serde_json::json!({"text": self.chat_text, "platform": plat});
+                let (base, token) = {
+                    let l = self.local.lock().unwrap();
+                    (l.server.clone(), l.token.clone())
+                };
+                match api_post(&base, &token, "/api/chat", &body) {
+                    Ok(_) => {
+                        self.note(format!("an {} gesendet", plat));
+                        self.chat_text.clear();
+                    }
+                    Err(e) => self.note(format!("Chat: {}", e)),
+                }
+            }
+        });
+        ui.add_space(10.0);
+        ui.weak("Twitch-Senden braucht eine Freigabe mit chat:edit - sag Bescheid, dann hole ich sie.");
     }
 
     fn ui_szenen(&mut self, ui: &mut egui::Ui) {
