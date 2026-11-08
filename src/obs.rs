@@ -18,6 +18,14 @@ fn sha256_b64(input: &str) -> String {
 
 /// Schickt eine Anfrage an OBS (ws://127.0.0.1:4455) und gibt die Antwort zurueck.
 pub fn obs_request(password: &str, request_type: &str) -> Result<String, String> {
+    obs_request_json(password, request_type, serde_json::json!({}))
+}
+
+pub fn obs_request_json(
+    password: &str,
+    request_type: &str,
+    request_data: serde_json::Value,
+) -> Result<String, String> {
     let url = "ws://127.0.0.1:4455";
     let (mut socket, _) = connect(url).map_err(|e| format!("OBS nicht erreichbar: {}", e))?;
     let _ = Duration::from_secs(6);
@@ -57,7 +65,7 @@ pub fn obs_request(password: &str, request_type: &str) -> Result<String, String>
 
     // 3) Anfrage
     let req = serde_json::json!({
-        "op": 6, "d": {"requestType": request_type, "requestId": "1"}
+        "op": 6, "d": {"requestType": request_type, "requestId": "1", "requestData": request_data}
     });
     socket
         .send(Message::Text(req.to_string().into()))

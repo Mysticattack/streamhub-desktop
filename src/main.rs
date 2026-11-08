@@ -267,6 +267,7 @@ fn spawn_poller(ctx: egui::Context, local: Arc<Mutex<Local>>, shared: SharedRef)
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
     Status,
+    Szenen,
     Ziele,
     Kodierung,
     Aufnahme,
@@ -284,6 +285,8 @@ struct App {
     new_name: String,
     new_url: String,
     draft: Option<Config>,
+    scenes: Vec<String>,
+    current_scene: String,
     msg: String,
     msg_time: Instant,
 }
@@ -302,6 +305,8 @@ impl App {
             new_name: String::new(),
             new_url: String::new(),
             draft: None,
+            scenes: Vec::new(),
+            current_scene: String::new(),
             msg: String::new(),
             msg_time: Instant::now(),
         }
@@ -388,6 +393,7 @@ impl eframe::App for App {
             ui.add_space(8.0);
             for (t, name) in [
                 (Tab::Status, "Status"),
+                (Tab::Szenen, "Szenen"),
                 (Tab::Ziele, "Ziele"),
                 (Tab::Kodierung, "Kodierung"),
                 (Tab::Aufnahme, "Aufnahme"),
@@ -404,6 +410,7 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Status => self.ui_status(ui, &status),
+            Tab::Szenen => self.ui_szenen(ui),
             Tab::Ziele => self.ui_ziele(ui, &status, &config),
             Tab::Kodierung => self.ui_kodierung(ui, &config),
             Tab::Aufnahme => self.ui_aufnahme(ui, &status, &config),
@@ -495,6 +502,53 @@ impl App {
         });
     }
 
+    fn ui_szenen(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Szenen");
+        ui.add_space(6.0);
+        let pw = self.local.lock().unwrap().obs_password.clone();
+        if self.scenes.is_empty() {
+            if pw.is_empty() {
+                ui.label("OBS-Passwort fehlt (Einstellungen).");
+                return;
+            }
+            if let Ok(r) = obs::obs_request(&pw, "GetSceneList") {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&r) {
+                    if let Some(list) = v["d"]["responseData"]["scenes"].as_array() {
+                        self.scenes = list
+                            .iter()
+                            .filter_map(|s| s.get("sceneName").and_then(|n| n.as_str()).map(String::from))
+                            .collect();
+                    }
+                    if let Some(cur) = v["d"]["responseData"]["currentProgramSceneName"].as_str() {
+                        self.current_scene = cur.to_string();
+                    }
+                }
+            }
+        }
+        if self.scenes.is_empty() {
+            ui.label("Keine Szenen gefunden – läuft OBS?");
+            return;
+        }
+        for name in self.scenes.clone() {
+            let ist_aktiv = name == self.current_scene;
+            let text = if ist_aktiv { format!("{}  (läuft)", name) } else { name.clone() };
+            if ui.selectable_label(ist_aktiv, text).clicked() && !ist_aktiv {
+                let body = serde_json::json!({"sceneName": name});
+                match obs::obs_request_json(&pw, "SetCurrentProgramScene", body) {
+                    Ok(_) => {
+                        self.current_scene = name.clone();
+                        self.note(format!("Szene: {}", name));
+                    }
+                    Err(e) => self.note(format!("OBS: {}", e)),
+                }
+            }
+        }
+        ui.add_space(8.0);
+        if ui.button("Liste neu laden").clicked() {
+            self.scenes.clear();
+        }
+    }
+
     fn ui_ziele(&mut self, ui: &mut egui::Ui, st: &Option<Status>, cfg: &Option<Config>) {
         ui.heading("Ziele");
         ui.add_space(6.0);
@@ -522,6 +576,22 @@ impl App {
         }
         ui.separator();
         ui.label("Neues Ziel");
+        ui.horizontal(|ui| {
+            ui.label("Plattform:");
+            if ui.button("Twitch").clicked() {
+                self.new_name = "Twitch".into();
+                self.new_url = "rtmp://live.twitch.tv/app/".into();
+            }
+            if ui.button("YouTube").clicked() {
+                self.new_name = "YouTube".into();
+                self.new_url = "rtmp://a.rtmp.youtube.com/live2/".into();
+            }
+            if ui.button("TikTok").clicked() {
+                self.new_name = "TikTok".into();
+                self.new_url = "rtmp://push.tiktokcdn.com/live/".into();
+            }
+            ui.small("nur noch den Schlüssel anhängen");
+        });
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.new_name).hint_text("Name").desired_width(120.0));
             ui.add(egui::TextEdit::singleline(&mut self.new_url).hint_text("rtmp://live.twitch.tv/app/DEIN_KEY").desired_width(420.0));
