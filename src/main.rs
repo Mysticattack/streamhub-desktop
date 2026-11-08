@@ -67,6 +67,8 @@ struct DestCfg {
 #[derive(Deserialize, Serialize, Default, Clone, Debug)]
 struct Config {
     transcode: Transcode,
+    #[serde(default)]
+    ingest_v: Ingest,
     record: RecordCfg,
     ingest: Ingest,
     overlay: Overlay,
@@ -675,9 +677,14 @@ impl App {
         if let Some(c) = cfg {
             if let Some(ing) = Some(&c.ingest) {
                 ui.add_space(12.0);
-                ui.label("Eingang für OBS");
+                ui.label("Eingang für OBS (quer)");
                 ui.monospace(format!("Server: {}", ing.server));
                 ui.monospace(format!("Schlüssel: {}", ing.key));
+                ui.add_space(6.0);
+                ui.label("Eingang für OBS (vertikal)");
+                ui.monospace(format!("Server: {}", c.ingest_v.server));
+                ui.monospace(format!("Schlüssel: {}", c.ingest_v.key));
+                ui.small("Im Aitum-Multistream-Dock: zweite Ausgabe mit diesen Werten, Leinwand = Aitum Vertical");
             }
         }
     }
