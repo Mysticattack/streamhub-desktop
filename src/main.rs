@@ -231,6 +231,12 @@ struct Local {
     token: String,
     #[serde(default)]
     obs_password: String,
+    #[serde(default = "def_theme")]
+    theme: String,
+}
+
+fn def_theme() -> String {
+    "gta6".to_string()
 }
 
 impl Default for Local {
@@ -239,6 +245,7 @@ impl Default for Local {
             server: "https://grafana.allo.bet/hub".to_string(),
             token: String::new(),
             obs_password: String::new(),
+            theme: def_theme(),
         }
     }
 }
@@ -553,11 +560,23 @@ impl eframe::App for App {
         if let Some(c) = &config {
             self.sync_draft(c);
         }
+        let th = self.local.lock().unwrap().theme.clone();
+        apply_theme(ctx, &th);
 
         egui::TopBottomPanel::top("kopf").show(ctx, |ui| {
             ui.add_space(6.0);
+            theme_bar(ui, &th);
             ui.horizontal(|ui| {
-                ui.heading("StreamHub");
+                let title = if th == "gta6" {
+                    egui::RichText::new("STREAMHUB").size(24.0).strong()
+                        .color(egui::Color32::from_rgb(0xff, 0x2e, 0x93))
+                } else {
+                    egui::RichText::new("StreamHub").size(22.0)
+                };
+                ui.label(title);
+                if th == "gta6" {
+                    ui.label(egui::RichText::new("VICE").size(11.0).color(egui::Color32::from_rgb(0x00, 0xe5, 0xff)));
+                }
                 ui.separator();
                 match &status {
                     Some(s) if s.live => {
@@ -1681,6 +1700,81 @@ impl App {
                 self.post("/api/config", body);
             }
         }
+    }
+}
+
+
+fn apply_theme(ctx: &egui::Context, theme: &str) {
+    match theme {
+        "gta6" => {
+            let mut v = egui::Visuals::dark();
+            let bg = egui::Color32::from_rgb(0x12, 0x0a, 0x1f);
+            let panel = egui::Color32::from_rgb(0x17, 0x0d, 0x28);
+            let widget = egui::Color32::from_rgb(0x24, 0x14, 0x36);
+            v.panel_fill = panel;
+            v.window_fill = bg;
+            v.extreme_bg_color = egui::Color32::from_rgb(0x0b, 0x06, 0x14);
+            v.faint_bg_color = egui::Color32::from_rgb(0x1d, 0x11, 0x30);
+            v.window_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0xff, 0x2e, 0x93));
+            v.widgets.noninteractive.bg_fill = panel;
+            v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0xc9, 0xb8, 0xe8));
+            v.widgets.inactive.bg_fill = widget;
+            v.widgets.inactive.weak_bg_fill = widget;
+            v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0xf2, 0xea, 0xff));
+            v.widgets.hovered.bg_fill = egui::Color32::from_rgb(0x33, 0x20, 0x4a);
+            v.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(0x33, 0x20, 0x4a);
+            v.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0x00, 0xe5, 0xff));
+            v.widgets.active.bg_fill = egui::Color32::from_rgb(0x3d, 0x24, 0x56);
+            v.widgets.active.weak_bg_fill = egui::Color32::from_rgb(0x3d, 0x24, 0x56);
+            v.widgets.active.fg_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(0xff, 0x2e, 0x93));
+            v.selection.bg_fill = egui::Color32::from_rgb(0xff, 0x2e, 0x93).gamma_multiply(0.55);
+            v.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0xff, 0x8a, 0x3d));
+            v.hyperlink_color = egui::Color32::from_rgb(0x00, 0xe5, 0xff);
+            v.override_text_color = Some(egui::Color32::from_rgb(0xf2, 0xea, 0xff));
+            for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active,
+                      &mut v.widgets.noninteractive, &mut v.widgets.open] {
+                w.corner_radius = egui::CornerRadius::same(5);
+            }
+            v.window_corner_radius = egui::CornerRadius::same(8);
+            ctx.set_visuals(v);
+        }
+        "minecraft" => {
+            let mut v = egui::Visuals::dark();
+            v.panel_fill = egui::Color32::from_rgb(0x2b, 0x2b, 0x2b);
+            v.window_fill = egui::Color32::from_rgb(0x3c, 0x3c, 0x3c);
+            v.widgets.inactive.bg_fill = egui::Color32::from_rgb(0x6f, 0x6f, 0x6f);
+            v.widgets.hovered.bg_fill = egui::Color32::from_rgb(0x7f, 0x8f, 0x6f);
+            v.widgets.active.bg_fill = egui::Color32::from_rgb(0x5c, 0x8a, 0x3c);
+            for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active,
+                      &mut v.widgets.noninteractive, &mut v.widgets.open] {
+                w.corner_radius = egui::CornerRadius::ZERO;
+            }
+            ctx.set_visuals(v);
+        }
+        _ => ctx.set_visuals(egui::Visuals::dark()),
+    }
+}
+
+fn theme_bar(ui: &mut egui::Ui, theme: &str) {
+    let (c1, c2, c3) = if theme == "gta6" {
+        (egui::Color32::from_rgb(0xff, 0x2e, 0x93),
+         egui::Color32::from_rgb(0x8a, 0x2b, 0xbe),
+         egui::Color32::from_rgb(0x00, 0xe5, 0xff))
+    } else {
+        (egui::Color32::from_rgb(0x5c, 0x8a, 0x3c),
+         egui::Color32::from_rgb(0x3f, 0x6b, 0x2a),
+         egui::Color32::from_rgb(0x8b, 0x5a, 0x2b))
+    };
+    let rect = ui.available_rect_before_wrap();
+    let h = 5.0;
+    let bar = egui::Rect::from_min_size(rect.min + egui::vec2(0.0, -3.0), egui::vec2(rect.width(), h));
+    let p = ui.painter();
+    let steps = 48;
+    for i in 0..steps {
+        let t = i as f32 / (steps - 1) as f32;
+        let col = if t < 0.5 { c1.lerp_to_gamma(c2, t * 2.0) } else { c2.lerp_to_gamma(c3, (t - 0.5) * 2.0) };
+        let x = bar.min.x + bar.width() * (i as f32 / steps as f32);
+        p.rect_filled(egui::Rect::from_min_size(egui::pos2(x, bar.min.y), egui::vec2(bar.width() / steps as f32 + 1.0, h)), 0.0, col);
     }
 }
 
