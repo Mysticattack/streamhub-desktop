@@ -129,6 +129,8 @@ struct OvInner {
     #[serde(default)]
     splash: String,
     #[serde(default)]
+    theme: String,
+    #[serde(default)]
     goal: u32,
     #[serde(default)]
     countdown_minutes: u32,
@@ -432,6 +434,7 @@ struct App {
     ov_cd: u32,
     ov_chatsec: u32,
     ov_chatmax: u32,
+    ov_theme: String,
     inf_loaded: bool,
     big: bool,
     chat_platform: bool,   // false = Twitch, true = YouTube
@@ -477,6 +480,7 @@ impl App {
             ov_cd: 0,
             ov_chatsec: 60,
             ov_chatmax: 9,
+            ov_theme: "mc".into(),
             inf_loaded: false,
             big: false,
             chat_platform: false,
@@ -1166,6 +1170,7 @@ impl App {
                 self.ov_cd = r.config.countdown_minutes;
                 self.ov_chatsec = if r.config.chat_seconds == 0 { 60 } else { r.config.chat_seconds };
                 self.ov_chatmax = if r.config.chat_max == 0 { 9 } else { r.config.chat_max };
+                self.ov_theme = if r.config.theme.is_empty() { "mc".into() } else { r.config.theme.clone() };
                 self.ov = Some(r.config);
             } else {
                 self.note(format!("Overlay: {}", r.error));
@@ -1217,6 +1222,19 @@ impl App {
                         self.post("/api/overlay", serde_json::json!({"countdown_minutes": 0}));
                         self.note("Countdown aus");
                     }
+                });
+                ui.end_row();
+                ui.label("Stream-Design");
+                ui.horizontal(|ui| {
+                    for (k, l) in [("mc", "Minecraft"), ("gta6", "GTA 6 Neon")] {
+                        let aktiv = self.ov_theme == k;
+                        if ui.selectable_label(aktiv, l).clicked() && !aktiv {
+                            self.ov_theme = k.to_string();
+                            self.post("/api/overlay", serde_json::json!({"theme": k}));
+                            self.note(format!("Stream-Design: {}", l));
+                        }
+                    }
+                    ui.weak("wirkt nach Neuladen der Overlay-Quellen in OBS");
                 });
                 ui.end_row();
                 ui.label("Chat-Nachricht weg nach");
